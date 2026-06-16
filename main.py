@@ -17,9 +17,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # ================== CONFIG ==================
-BOT_TOKEN = "8808046131:AAHCgB22O9KtwtIKrfXpMOBrPZRzNvN-3oo"
+BOT_TOKEN = "8818263529:AAFQ6L9_ZdPfbLVApWIMNuBIeFiPfYo522Q"
 ADMIN_CHAT_ID = "2035024902"
-CHANNEL_ID = "-1003903695158"
+CHANNEL_ID = "-5472730272"
 
 if not BOT_TOKEN or not ADMIN_CHAT_ID:
     raise RuntimeError("BOT_TOKEN and ADMIN_CHAT_ID must be set")
