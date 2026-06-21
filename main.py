@@ -1,5 +1,5 @@
 import os, json, time, random, threading, requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from flask import Flask
 import telebot
@@ -11,6 +11,11 @@ API_KEY = "6046069a0ac14753b91b0af15b94c834"
 DATA_FILE = "user_data.json"
 TEAMS = ["Brazil", "Argentina", "Germany", "France", "England", "Spain",
          "Portugal", "Netherlands", "Italy", "Belgium", "Croatia", "Uruguay"]
+BENGALI_MONTHS = {
+    1: "জানুয়ারি", 2: "ফেব্রুয়ারি", 3: "মার্চ", 4: "এপ্রিল",
+    5: "মে", 6: "জুন", 7: "জুলাই", 8: "আগস্ট",
+    9: "সেপ্টেম্বর", 10: "অক্টোবর", 11: "নভেম্বর", 12: "ডিসেম্বর"
+}
 
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN)
@@ -42,11 +47,10 @@ def get_user(uid):
             "timezone": "Asia/Dhaka",
             "mute_start": None,
             "mute_end": None,
-            "quiz_score": 0,
             "username": None,
             "fav_team": None,
             "notifications_enabled": True,
-            "auto_unfollow_times": {}   # match_id -> timestamp when to remove
+            "auto_unfollow_times": {}
         }
     return user_data[uid]
 
@@ -65,8 +69,11 @@ def get_live_upcoming():
     data = api_get("https://api.football-data.org/v4/competitions/WC/matches?status=LIVE,SCHEDULED")
     return data.get("matches", []) if data else []
 
+def get_live_matches():
+    data = api_get("https://api.football-data.org/v4/competitions/WC/matches?status=LIVE")
+    return data.get("matches", []) if data else []
+
 def get_today_matches():
-    """আজকের তারিখের ম্যাচ (UTC)"""
     today = datetime.utcnow().strftime("%Y-%m-%d")
     url = f"https://api.football-data.org/v4/competitions/WC/matches?dateFrom={today}&dateTo={today}"
     data = api_get(url)
@@ -84,17 +91,27 @@ def get_match_status_text(m):
     if status == "PAUSED": return "⏸️ বিরতি"
     return status
 
+# ---------- সময় কনভার্টার ----------
+def utc_to_dhaka(utc_str):
+    try:
+        utc_time = datetime.strptime(utc_str[:19], "%Y-%m-%dT%H:%M:%S")
+        dhaka_tz = pytz.timezone("Asia/Dhaka")
+        dhaka_time = utc_time.replace(tzinfo=pytz.utc).astimezone(dhaka_tz)
+        month_bn = BENGALI_MONTHS[dhaka_time.month]
+        return f"{dhaka_time.day} {month_bn}, {dhaka_time.strftime('%I:%M %p')}"
+    except:
+        return utc_str[:16].replace("T", " ")
+
 # ---------- স্থায়ী কিবোর্ড ----------
 def main_reply_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     kb.row(KeyboardButton("⚽ ম্যাচ"), KeyboardButton("📅 আজকের ম্যাচ"))
-    kb.row(KeyboardButton("📋 আমার ম্যাচ"), KeyboardButton("⭐ পছন্দের দল"))
-    kb.row(KeyboardButton("⭐ টপ স্কোরার"), KeyboardButton("🧠 কুইজ"))
-    kb.row(KeyboardButton("🏆 লিডারবোর্ড"), KeyboardButton("⚙️ সেটিংস"))
-    kb.row(KeyboardButton("❓ সাহায্য"))
+    kb.row(KeyboardButton("📊 লাইভ স্ট্যাটস"), KeyboardButton("📋 আমার ম্যাচ"))
+    kb.row(KeyboardButton("⭐ পছন্দের দল"), KeyboardButton("⭐ টপ স্কোরার"))
+    kb.row(KeyboardButton("⚙️ সেটিংস"), KeyboardButton("❓ সাহায্য"))
     return kb
 
-# ---------- নোটিফিকেশন চেক (মাস্টার টগল + মিউট) ----------
+# ---------- নোটিফিকেশন চেক ----------
 def can_notify(user):
     if not user.get("notifications_enabled", True):
         return False
@@ -108,13 +125,12 @@ def can_notify(user):
             if now >= s or now < e: return False
     return True
 
-# ---------- ব্যাকগ্রাউন্ড চেকার ----------
+# ---------- ব্যাকগ্রাউন্ড চেকার (১০ সেকেন্ড পরপর) ----------
 def match_checker():
     while True:
         with lock:
             all_users = dict(user_data)
         for uid, u in all_users.items():
-            # অটো আনফলো
             auto_times = u.get("auto_unfollow_times", {})
             for mid in list(auto_times.keys()):
                 if time.time() >= auto_times[mid]:
@@ -146,16 +162,13 @@ def match_checker():
                 l_sub = last.get("substitution_count", 0)
                 l_goals = last.get("last_goal_count", 0)
 
-                # প্রিয় দলের চিহ্ন যোগ
                 h_display = f"⭐ {home_team}" if fav and fav.lower() == home_team.lower() else home_team
                 a_display = f"⭐ {away_team}" if fav and fav.lower() == away_team.lower() else away_team
 
-                # শুরু
                 if ls != "IN_PLAY" and status == "IN_PLAY":
                     if notify:
                         bot.send_message(uid, f"⚽ ম্যাচ শুরু!\n{h_display} 🆚 {a_display}")
 
-                # গোল
                 current_goals = home_goals + away_goals
                 if status == "IN_PLAY" and current_goals > l_goals:
                     if notify:
@@ -172,7 +185,6 @@ def match_checker():
                             msg = f"⚽️ গোল!\n{h_display} {home_goals} - {away_goals} {a_display}"
                         bot.send_message(uid, msg)
 
-                # কার্ড
                 bookings = data.get("bookings", [])
                 current_booking_count = len(bookings)
                 if current_booking_count > l_booking:
@@ -185,7 +197,6 @@ def match_checker():
                             icon = "🟨" if card == "YELLOW" else "🟥"
                             bot.send_message(uid, f"{icon} {card} কার্ড: {player} ({minute}′)")
 
-                # বদল
                 subs = data.get("substitutions", [])
                 current_sub_count = len(subs)
                 if current_sub_count > l_sub:
@@ -197,14 +208,11 @@ def match_checker():
                             minute = s["minute"]
                             bot.send_message(uid, f"🔄 বদল: {out} ↓ / {inp} ↑ ({minute}′)")
 
-                # শেষ (এবং অটো আনফলো নির্ধারণ)
                 if ls != "FINISHED" and status == "FINISHED":
                     if notify:
                         bot.send_message(uid, f"🏁 খেলা শেষ!\n{home_team} {home_goals} - {away_goals} {away_team}")
-                    # ১ মিনিট পর আনফলো করতে সেট
                     user_data[uid].setdefault("auto_unfollow_times", {})[mid] = time.time() + 60
 
-                # স্টেট আপডেট
                 user_data[uid][last_key] = {
                     "status": status,
                     "hg": home_goals,
@@ -214,7 +222,7 @@ def match_checker():
                     "last_goal_count": current_goals
                 }
         save_data()
-        time.sleep(30)
+        time.sleep(10)  # ১০ সেকেন্ড পর পর চেক
 
 # ---------- /start ----------
 @bot.message_handler(commands=['start'])
@@ -226,8 +234,8 @@ def start_cmd(msg):
 
 # ---------- মেনু হ্যান্ডলার ----------
 @bot.message_handler(func=lambda m: m.text in [
-    "⚽ ম্যাচ", "📅 আজকের ম্যাচ", "📋 আমার ম্যাচ", "⭐ পছন্দের দল",
-    "⭐ টপ স্কোরার", "🧠 কুইজ", "🏆 লিডারবোর্ড", "⚙️ সেটিংস", "❓ সাহায্য"
+    "⚽ ম্যাচ", "📅 আজকের ম্যাচ", "📊 লাইভ স্ট্যাটস", "📋 আমার ম্যাচ",
+    "⭐ পছন্দের দল", "⭐ টপ স্কোরার", "⚙️ সেটিংস", "❓ সাহায্য"
 ])
 def menu_text_handler(msg):
     uid = str(msg.from_user.id)
@@ -247,6 +255,24 @@ def menu_text_handler(msg):
         else:
             show_matches(msg.chat.id, matches, user)
 
+    elif text == "📊 লাইভ স্ট্যাটস":
+        live = get_live_matches()
+        if not live:
+            bot.send_message(msg.chat.id, "এখন কোনো লাইভ ম্যাচ নেই।")
+            return
+        for m in live:
+            mid = m["id"]
+            home = m["homeTeam"]["name"]
+            away = m["awayTeam"]["name"]
+            home_goals = m["score"]["fullTime"]["home"] or 0
+            away_goals = m["score"]["fullTime"]["away"] or 0
+            minute = m.get("minute", "N/A")
+            txt = f"🔴 {home} {home_goals} - {away_goals} {away} | ⏱ {minute}′"
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("📊 বিস্তারিত", callback_data=f"livestats_{mid}"))
+            kb.add(InlineKeyboardButton("⬅️ ফিরে যান", callback_data="menu_main"))
+            bot.send_message(msg.chat.id, txt, reply_markup=kb)
+
     elif text == "📋 আমার ম্যাচ":
         followed = user.get("followed", [])
         if not followed:
@@ -255,10 +281,9 @@ def menu_text_handler(msg):
             for mid in followed:
                 m = get_match(mid)
                 if m:
-                    show_single_match(msg.chat.id, m, user)
+                    show_match_line(msg.chat.id, m, user)
 
     elif text == "⭐ পছন্দের দল":
-        # দল বাছাই মেনু
         kb = InlineKeyboardMarkup(row_width=3)
         for t in TEAMS:
             kb.add(InlineKeyboardButton(t, callback_data=f"favteam_{t}"))
@@ -281,36 +306,6 @@ def menu_text_handler(msg):
                 txt += f"{i}. {name} ({team}) - {goals} গোল\n"
             bot.send_message(msg.chat.id, txt)
 
-    elif text == "🧠 কুইজ":
-        q = random.choice([
-            {"q": "বিশ্বকাপে সবচেয়ে বেশি গোলদাতা কে?", "opts": ["মিরোস্লাভ ক্লোজে", "রোনালদো", "পেলে", "ম্যারাডোনা"], "ans": 0},
-            {"q": "২০২২ বিশ্বকাপের চ্যাম্পিয়ন কোন দেশ?", "opts": ["আর্জেন্টিনা", "ফ্রান্স", "ব্রাজিল", "জার্মানি"], "ans": 0},
-            {"q": "ফিফা বিশ্বকাপ কত বছর পরপর হয়?", "opts": ["৪ বছর", "২ বছর", "৩ বছর", "৫ বছর"], "ans": 0},
-            {"q": "বাংলাদেশ কোন কনফেডারেশনের অন্তর্ভুক্ত?", "opts": ["এএফসি", "উয়েফা", "কনকাকাফ", "কাফ"], "ans": 0},
-            {"q": "পুসকাস পুরস্কার কীসের জন্য দেওয়া হয়?", "opts": ["সেরা গোল", "সেরা খেলোয়াড়", "সেরা কোচ", "ফেয়ার প্লে"], "ans": 0},
-        ])
-        user["quiz_current"] = q
-        kb = InlineKeyboardMarkup(row_width=2)
-        for i, opt in enumerate(q["opts"]):
-            kb.add(InlineKeyboardButton(opt, callback_data=f"quiz_ans_{i}"))
-        bot.send_message(msg.chat.id, "🧠 " + q["q"], reply_markup=kb)
-
-    elif text == "🏆 লিডারবোর্ড":
-        scores = []
-        for uid2, u2 in user_data.items():
-            if u2.get("quiz_score", 0) > 0:
-                name = u2.get("username", uid2)
-                scores.append((name, u2["quiz_score"]))
-        scores.sort(key=lambda x: x[1], reverse=True)
-        if not scores:
-            bot.send_message(msg.chat.id, "এখনো কেউ কুইজে পয়েন্ট পায়নি।")
-        else:
-            txt = "🏆 কুইজ লিডারবোর্ড:\n"
-            for i, (name, pts) in enumerate(scores[:10], 1):
-                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "  "
-                txt += f"{medal} {i}. {name} — {pts} পয়েন্ট\n"
-            bot.send_message(msg.chat.id, txt)
-
     elif text == "⚙️ সেটিংস":
         tz = user["timezone"]
         ms = user["mute_start"] if user["mute_start"] is not None else "না"
@@ -329,27 +324,27 @@ def menu_text_handler(msg):
         txt = ("ℹ️ সাহায্য:\n\n"
                "⚽ ম্যাচ – লাইভ/আসন্ন ম্যাচ দেখুন ও ফলো করুন।\n"
                "📅 আজকের ম্যাচ – শুধু আজকের ফিফা ম্যাচ।\n"
+               "📊 লাইভ স্ট্যাটস – চলমান ম্যাচের বিস্তারিত (গোল, কার্ড, বদল)।\n"
                "📋 আমার ম্যাচ – ফলো করা ম্যাচ।\n"
                "⭐ পছন্দের দল – প্রিয় দল সেট করে নোটিফিকেশনে স্টার দেখুন।\n"
                "⭐ টপ স্কোরার – সেরা গোলদাতা।\n"
-               "🧠 কুইজ – ফুটবল কুইজ খেলে পয়েন্ট জিতুন।\n"
-               "🏆 লিডারবোর্ড – কুইজের সেরা খেলোয়াড়।\n"
                "⚙️ সেটিংস – টাইমজোন, নীরবতা, নোটিফিকেশন অন/অফ।\n\n"
                "ফলো করলে অটো নোটিফিকেশন: শুরু, গোল, কার্ড, বদল, শেষ।\n"
-               "ম্যাচ শেষের ১ মিনিট পর অটো আনফলো হয়ে যাবে।")
+               "ম্যাচ শেষের ১ মিনিট পর অটো আনফলো হয়ে যাবে।\n"
+               "সময়সূচি সবসময় ঢাকা সময়ে দেখানো হয়।")
         bot.send_message(msg.chat.id, txt)
 
-# ---------- ম্যাচ দেখানোর হেল্পার ----------
+# ---------- ম্যাচ দেখানো ----------
 def show_match_line(chat_id, m, user):
     mid = m["id"]
     home = m["homeTeam"]["name"]
     away = m["awayTeam"]["name"]
     st = get_match_status_text(m)
-    utc = m["utcDate"][:16].replace("T", " ")
+    time_str = utc_to_dhaka(m["utcDate"])
     fav = user.get("fav_team")
     h_disp = f"⭐ {home}" if fav and fav.lower() == home.lower() else home
     a_disp = f"⭐ {away}" if fav and fav.lower() == away.lower() else away
-    txt = f"{h_disp} 🆚 {a_disp}\n{st} | {utc}"
+    txt = f"{h_disp} 🆚 {a_disp}\n{st} | {time_str}"
     kb = InlineKeyboardMarkup()
     if str(mid) in user.get("followed", []):
         kb.add(InlineKeyboardButton("❌ আনফলো", callback_data=f"unfollow_{mid}"))
@@ -364,9 +359,6 @@ def show_matches(chat_id, matches, user):
         return
     for m in matches:
         show_match_line(chat_id, m, user)
-
-def show_single_match(chat_id, m, user):
-    show_match_line(chat_id, m, user)
 
 # ---------- ইনলাইন কলব্যাক ----------
 @bot.callback_query_handler(func=lambda call: True)
@@ -410,26 +402,39 @@ def handle_callback(call):
             user["fav_team"] = team
             save_data()
             bot.answer_callback_query(call.id, f"⭐ {team} এখন আপনার প্রিয় দল।")
-    elif data.startswith("quiz_ans_"):
-        idx = int(data.split("_")[2])
-        q = user.get("quiz_current")
-        if not q:
-            bot.answer_callback_query(call.id, "কুইজের মেয়াদ শেষ।")
+    elif data.startswith("livestats_"):
+        mid = data.split("_")[1]
+        m = get_match(mid)
+        if not m:
+            bot.answer_callback_query(call.id, "ম্যাচ পাওয়া যায়নি।")
             return
-        correct = idx == q["ans"]
-        if correct:
-            user["quiz_score"] = user.get("quiz_score", 0) + 10
-            bot.answer_callback_query(call.id, "✅ সঠিক! +10 পয়েন্ট")
-        else:
-            bot.answer_callback_query(call.id, f"❌ ভুল! উত্তর: {q['opts'][q['ans']]}")
-        user.pop("quiz_current", None)
-        save_data()
-        try:
-            bot.edit_message_text(f"আপনার স্কোর: {user['quiz_score']}",
-                                  chat_id=call.message.chat.id,
-                                  message_id=call.message.message_id)
-        except:
-            pass
+        home = m["homeTeam"]["name"]
+        away = m["awayTeam"]["name"]
+        home_g = m["score"]["fullTime"]["home"] or 0
+        away_g = m["score"]["fullTime"]["away"] or 0
+        minute = m.get("minute", "N/A")
+        txt = f"🔴 {home} {home_g} - {away_g} {away}\n⏱ {minute}′\n\n"
+        goals = m.get("goals", [])
+        if goals:
+            txt += "⚽ গোল:\n"
+            for g in goals:
+                txt += f"{g['scorer']['name']} {g['minute']}′\n"
+        bookings = m.get("bookings", [])
+        if bookings:
+            txt += "\n🟨/🟥 কার্ড:\n"
+            for b in bookings:
+                txt += f"{b['player']['name']} ({b['card']}) {b['minute']}′\n"
+        subs = m.get("substitutions", [])
+        if subs:
+            txt += "\n🔄 বদল:\n"
+            for s in subs:
+                txt += f"{s['playerOut']['name']} ↓ / {s['playerIn']['name']} ↑ {s['minute']}′\n"
+        if not goals and not bookings and not subs:
+            txt += "এখনো কোনো উল্লেখযোগ্য ঘটনা নেই।"
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data=f"livestats_{mid}"))
+        kb.add(InlineKeyboardButton("⬅️ ফিরে যান", callback_data="menu_main"))
+        bot.send_message(call.message.chat.id, txt, reply_markup=kb)
     elif data == "clear_mute":
         user["mute_start"] = None
         user["mute_end"] = None
