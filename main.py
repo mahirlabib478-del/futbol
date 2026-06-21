@@ -222,7 +222,7 @@ def match_checker():
                     "last_goal_count": current_goals
                 }
         save_data()
-        time.sleep(10)  # ১০ সেকেন্ড পর পর চেক
+        time.sleep(10)
 
 # ---------- /start ----------
 @bot.message_handler(commands=['start'])
@@ -494,7 +494,17 @@ def any_msg(msg):
 def home():
     return "Bot is running!"
 
+# ---------- চালু (ওয়েবহুক মুছে পোলিং শুরু) ----------
 if __name__ == "__main__":
+    # পুরনো ওয়েবহুক থাকলে তা সরিয়ে ফেলা
+    bot.remove_webhook()
+    time.sleep(1)  # নিশ্চিত হতে একটু অপেক্ষা
+
+    # ব্যাকগ্রাউন্ড চেকার থ্রেড
     threading.Thread(target=match_checker, daemon=True).start()
+
+    # টেলিগ্রাম পোলিং থ্রেড
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
+
+    # ফ্লাস্ক ওয়েব সার্ভার
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
